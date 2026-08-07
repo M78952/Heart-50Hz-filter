@@ -12,8 +12,8 @@
  *     y = filter(b,a,x);
  *
  * The code below is the causal, sample-by-sample equivalent: a second-order
- * IIR (biquad) notch.  It is intentionally not called from main.c yet, so the
- * existing raw ADC stream is unchanged while you fill in and test parameters.
+ * IIR (biquad) notch.  main.c calls ECG_Notch50Hz_Process() once for every
+ * ADC sample, then sends the filtered value over USART1.
  *
  * Difference equation:
  *
@@ -40,6 +40,14 @@
 #define ECG_NOTCH_PI (3.14159265358979323846f)
 #endif
 
+static void ECG_Notch50Hz_ClearState(ECG_Notch50HzFilter *filter)
+{
+    filter->x1 = 0.0f;
+    filter->x2 = 0.0f;
+    filter->y1 = 0.0f;
+    filter->y2 = 0.0f;
+}
+
 void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
 {
     float w0;
@@ -51,7 +59,25 @@ void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
         return;
     }
 
-    /* TODO: verify Fs > 2*f0 and Q > 0 before using the filter. */
+    /*
+     * A digital notch must satisfy 0 < f0 < Fs/2 and Q > 0.  If a parameter
+     * is entered incorrectly, use a unity/bypass filter instead of dividing
+     * by zero or generating unstable coefficients.
+     */
+    if ((ECG_NOTCH_SAMPLE_RATE_HZ <= 0.0f) ||
+        (ECG_NOTCH_CENTER_FREQ_HZ <= 0.0f) ||
+        (ECG_NOTCH_CENTER_FREQ_HZ >=
+         (0.5f * ECG_NOTCH_SAMPLE_RATE_HZ)) ||
+        (ECG_NOTCH_Q <= 0.0f)) {
+        filter->b0 = 1.0f;
+        filter->b1 = 0.0f;
+        filter->b2 = 0.0f;
+        filter->a1 = 0.0f;
+        filter->a2 = 0.0f;
+        ECG_Notch50Hz_ClearState(filter);
+        return;
+    }
+
     w0 = 2.0f * ECG_NOTCH_PI * ECG_NOTCH_CENTER_FREQ_HZ /
          ECG_NOTCH_SAMPLE_RATE_HZ;
     alpha = sinf(w0) / (2.0f * ECG_NOTCH_Q);
@@ -64,10 +90,7 @@ void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
     filter->a1 = -2.0f * cosine / a0;
     filter->a2 = (1.0f - alpha) / a0;
 
-    filter->x1 = 0.0f;
-    filter->x2 = 0.0f;
-    filter->y1 = 0.0f;
-    filter->y2 = 0.0f;
+    ECG_Notch50Hz_ClearState(filter);
 }
 
 float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)

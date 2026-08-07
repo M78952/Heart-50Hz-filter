@@ -4,8 +4,6 @@
 #include "Notch50Hz.h"
 
 #define ECG_ADC_MAX_VALUE (4095.0f)
-#define ECG_ADC_SATURATION_LOW   (4U)
-#define ECG_ADC_SATURATION_HIGH  (4091U)
 
 /*
  * Set to 1 temporarily to inspect the unfiltered ADC waveform for clipping.
@@ -42,19 +40,9 @@ int main(void)
 
     while (1) {
         if (ECG_GetSample(&adc_value) != 0U) {
-            /*
-             * A clipped ADC sample contains information that no digital
-             * filter can reconstruct.  Re-prime the IIR around the rail value
-             * so clipping does not excite a long 50 Hz ringing transient.
-             */
-            if ((adc_value <= ECG_ADC_SATURATION_LOW) ||
-                (adc_value >= ECG_ADC_SATURATION_HIGH)) {
-                ECG_Notch50Hz_Reset(&notch_filter, (float)adc_value);
-                filtered_value = (float)adc_value;
-            } else {
-                filtered_value = ECG_Notch50Hz_Process(&notch_filter,
-                                                       (float)adc_value);
-            }
+            /* One direct-form-I difference-equation step, as in dlsim. */
+            filtered_value = ECG_Notch50Hz_Process(&notch_filter,
+                                                   (float)adc_value);
 
             filtered_adc_value = ECG_FilteredValueToAdc(filtered_value);
 

@@ -1,37 +1,25 @@
 /*
- * 50 Hz ECG notch-filter template for STM32F103 + Standard Peripheral Library
- * ---------------------------------------------------------------------------
- * MATLAB reference (offline):
+ * MATLAB-equivalent 50 Hz notch filter for STM32F103.
  *
- *     Fs = 500;                         % TODO: use the real ADC rate
- *     f0 = 50;                          % TODO: 50 Hz (or 60 Hz)
- *     Q  = 4;                           % default second-order mode
- *     wo = 2*f0/Fs;
- *     bw = wo/Q;
- *     [b,a] = iirnotch(wo,bw);
- *     y = filter(b,a,x);
+ * MATLAB source:
+ *   Fs = 500;
+ *   T = 1/Fs;
+ *   Fc = 50;
+ *   alpha = -2*cos(2*pi*Fc*T);
+ *   beta = 0.96;
+ *   b = [1, alpha, 1];
+ *   a = [1, alpha*beta, beta^2];
+ *   dataOut = dlsim(b, a, dataIn);
  *
- * The code below is the causal, sample-by-sample equivalent: a second-order
- * IIR (biquad) notch.  main.c calls ECG_Notch50Hz_Process() once for every
- * ADC sample, then sends the filtered value over USART1.
+ * With a[0] == 1, dlsim uses the following difference equation:
  *
- * Transposed Direct Form II equations:
+ *   y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2]
+ *          - a1*y[n-1] - a2*y[n-2]
  *
- *     y  = b0*x + state1
- *     state1 = b1*x - a1*y + state2
- *     state2 = b2*x - a2*y
- *
- * Coefficients use the common RBJ notch form:
- *
- *     w0    = 2*pi*f0/Fs
- *     alpha = sin(w0)/(2*Q)
- *     a0    = 1 + alpha
- *     b0    = 1/a0, b1 = -2*cos(w0)/a0, b2 = 1/a0
- *     a1    = -2*cos(w0)/a0, a2 = (1-alpha)/a0
- *
- * If exact coefficient-for-coefficient agreement with MATLAB iirnotch is
- * required, export MATLAB's b and a values and replace the five assignments
- * in ECG_Notch50Hz_Init().
+ * This implementation uses float instead of MATLAB's default double.  The
+ * algorithm, coefficient signs, delay order, and zero initial state are the
+ * same.  It is a single second-order section, not a cascaded fourth-order
+ * filter.
  */
 
 #include <math.h>
@@ -43,37 +31,28 @@
 
 static void ECG_Notch50Hz_ClearState(ECG_Notch50HzFilter *filter)
 {
-    uint8_t stage;
-
-    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
-        filter->state1[stage] = 0.0f;
-        filter->state2[stage] = 0.0f;
-    }
-
-    filter->primed = 0U;
+    filter->x1 = 0.0f;
+    filter->x2 = 0.0f;
+    filter->y1 = 0.0f;
+    filter->y2 = 0.0f;
 }
 
 void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
 {
-    float w0;
+    float omega;
     float alpha;
-    float a0;
-    float cosine;
 
     if (filter == (ECG_Notch50HzFilter *)0) {
         return;
     }
 
-    /*
-     * A digital notch must satisfy 0 < f0 < Fs/2 and Q > 0.  If a parameter
-     * is entered incorrectly, use a unity/bypass filter instead of dividing
-     * by zero or generating unstable coefficients.
-     */
+    /* Keep invalid settings from producing undefined coefficients. */
     if ((ECG_NOTCH_SAMPLE_RATE_HZ <= 0.0f) ||
         (ECG_NOTCH_CENTER_FREQ_HZ <= 0.0f) ||
         (ECG_NOTCH_CENTER_FREQ_HZ >=
          (0.5f * ECG_NOTCH_SAMPLE_RATE_HZ)) ||
-        (ECG_NOTCH_Q <= 0.0f)) {
+        (ECG_NOTCH_BETA <= 0.0f) ||
+        (ECG_NOTCH_BETA >= 1.0f)) {
         filter->b0 = 1.0f;
         filter->b1 = 0.0f;
         filter->b2 = 0.0f;
@@ -83,68 +62,50 @@ void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
         return;
     }
 
-    w0 = 2.0f * ECG_NOTCH_PI * ECG_NOTCH_CENTER_FREQ_HZ /
-         ECG_NOTCH_SAMPLE_RATE_HZ;
-    alpha = sinf(w0) / (2.0f * ECG_NOTCH_Q);
-    a0 = 1.0f + alpha;
-    cosine = cosf(w0);
+    /* This is exactly 2*pi*Fc*T, with T=1/Fs. */
+    omega = 2.0f * ECG_NOTCH_PI * ECG_NOTCH_CENTER_FREQ_HZ /
+            ECG_NOTCH_SAMPLE_RATE_HZ;
+    alpha = -2.0f * cosf(omega);
 
-    filter->b0 = 1.0f / a0;
-    filter->b1 = -2.0f * cosine / a0;
-    filter->b2 = 1.0f / a0;
-    filter->a1 = -2.0f * cosine / a0;
-    filter->a2 = (1.0f - alpha) / a0;
+    /* b = [1, alpha, 1], a = [1, alpha*beta, beta^2]. */
+    filter->b0 = 1.0f;
+    filter->b1 = alpha;
+    filter->b2 = 1.0f;
+    filter->a1 = alpha * ECG_NOTCH_BETA;
+    filter->a2 = ECG_NOTCH_BETA * ECG_NOTCH_BETA;
 
+    /* MATLAB dlsim starts with zero delay states. */
     ECG_Notch50Hz_ClearState(filter);
 }
 
-void ECG_Notch50Hz_Reset(ECG_Notch50HzFilter *filter, float input)
+void ECG_Notch50Hz_Reset(ECG_Notch50HzFilter *filter)
 {
-    uint8_t stage;
-
     if (filter == (ECG_Notch50HzFilter *)0) {
         return;
     }
 
-    /*
-     * Initialize the two states to the steady-state values for a constant
-     * input.  The notch has unity DC gain, so its first output equals input
-     * instead of treating the ADC midpoint as a large step from zero.
-     */
-    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
-        filter->state1[stage] = (1.0f - filter->b0) * input;
-        filter->state2[stage] = (filter->b2 - filter->a2) * input;
-    }
-
-    filter->primed = 1U;
+    ECG_Notch50Hz_ClearState(filter);
 }
 
 float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)
 {
     float output;
-    float stage_input;
-    uint8_t stage;
 
     if (filter == (ECG_Notch50HzFilter *)0) {
         return input;
     }
 
-    if (filter->primed == 0U) {
-        ECG_Notch50Hz_Reset(filter, input);
-        return input;
-    }
+    /* Direct-form-I implementation of the MATLAB dlsim recurrence. */
+    output = filter->b0 * input
+           + filter->b1 * filter->x1
+           + filter->b2 * filter->x2
+           - filter->a1 * filter->y1
+           - filter->a2 * filter->y2;
 
-    stage_input = input;
+    filter->x2 = filter->x1;
+    filter->x1 = input;
+    filter->y2 = filter->y1;
+    filter->y1 = output;
 
-    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
-        output = filter->b0 * stage_input + filter->state1[stage];
-        filter->state1[stage] = filter->b1 * stage_input
-                              - filter->a1 * output
-                              + filter->state2[stage];
-        filter->state2[stage] = filter->b2 * stage_input
-                              - filter->a2 * output;
-        stage_input = output;
-    }
-
-    return stage_input;
+    return output;
 }

@@ -5,7 +5,7 @@
  *
  *     Fs = 500;                         % TODO: use the real ADC rate
  *     f0 = 50;                          % TODO: 50 Hz (or 60 Hz)
- *     Q  = 8;                           % wider notch, shorter ringing
+ *     Q  = 4;                           % default second-order mode
  *     wo = 2*f0/Fs;
  *     bw = wo/Q;
  *     [b,a] = iirnotch(wo,bw);
@@ -43,8 +43,13 @@
 
 static void ECG_Notch50Hz_ClearState(ECG_Notch50HzFilter *filter)
 {
-    filter->state1 = 0.0f;
-    filter->state2 = 0.0f;
+    uint8_t stage;
+
+    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
+        filter->state1[stage] = 0.0f;
+        filter->state2[stage] = 0.0f;
+    }
+
     filter->primed = 0U;
 }
 
@@ -95,6 +100,8 @@ void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
 
 void ECG_Notch50Hz_Reset(ECG_Notch50HzFilter *filter, float input)
 {
+    uint8_t stage;
+
     if (filter == (ECG_Notch50HzFilter *)0) {
         return;
     }
@@ -104,14 +111,19 @@ void ECG_Notch50Hz_Reset(ECG_Notch50HzFilter *filter, float input)
      * input.  The notch has unity DC gain, so its first output equals input
      * instead of treating the ADC midpoint as a large step from zero.
      */
-    filter->state1 = (1.0f - filter->b0) * input;
-    filter->state2 = (filter->b2 - filter->a2) * input;
+    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
+        filter->state1[stage] = (1.0f - filter->b0) * input;
+        filter->state2[stage] = (filter->b2 - filter->a2) * input;
+    }
+
     filter->primed = 1U;
 }
 
 float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)
 {
     float output;
+    float stage_input;
+    uint8_t stage;
 
     if (filter == (ECG_Notch50HzFilter *)0) {
         return input;
@@ -122,11 +134,17 @@ float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)
         return input;
     }
 
-    output = filter->b0 * input + filter->state1;
-    filter->state1 = filter->b1 * input
-                   - filter->a1 * output
-                   + filter->state2;
-    filter->state2 = filter->b2 * input - filter->a2 * output;
+    stage_input = input;
 
-    return output;
+    for (stage = 0U; stage < ECG_NOTCH_STAGE_COUNT; stage++) {
+        output = filter->b0 * stage_input + filter->state1[stage];
+        filter->state1[stage] = filter->b1 * stage_input
+                              - filter->a1 * output
+                              + filter->state2[stage];
+        filter->state2[stage] = filter->b2 * stage_input
+                              - filter->a2 * output;
+        stage_input = output;
+    }
+
+    return stage_input;
 }

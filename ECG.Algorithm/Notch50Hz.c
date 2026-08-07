@@ -5,7 +5,7 @@
  *
  *     Fs = 500;                         % TODO: use the real ADC rate
  *     f0 = 50;                          % TODO: 50 Hz (or 60 Hz)
- *     Q  = 35;                          % TODO: try a different value
+ *     Q  = 8;                           % wider notch, shorter ringing
  *     wo = 2*f0/Fs;
  *     bw = wo/Q;
  *     [b,a] = iirnotch(wo,bw);
@@ -15,10 +15,11 @@
  * IIR (biquad) notch.  main.c calls ECG_Notch50Hz_Process() once for every
  * ADC sample, then sends the filtered value over USART1.
  *
- * Difference equation:
+ * Transposed Direct Form II equations:
  *
- *     y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2]
- *                         - a1*y[n-1] - a2*y[n-2]
+ *     y  = b0*x + state1
+ *     state1 = b1*x - a1*y + state2
+ *     state2 = b2*x - a2*y
  *
  * Coefficients use the common RBJ notch form:
  *
@@ -42,10 +43,9 @@
 
 static void ECG_Notch50Hz_ClearState(ECG_Notch50HzFilter *filter)
 {
-    filter->x1 = 0.0f;
-    filter->x2 = 0.0f;
-    filter->y1 = 0.0f;
-    filter->y2 = 0.0f;
+    filter->state1 = 0.0f;
+    filter->state2 = 0.0f;
+    filter->primed = 0U;
 }
 
 void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
@@ -93,6 +93,22 @@ void ECG_Notch50Hz_Init(ECG_Notch50HzFilter *filter)
     ECG_Notch50Hz_ClearState(filter);
 }
 
+void ECG_Notch50Hz_Reset(ECG_Notch50HzFilter *filter, float input)
+{
+    if (filter == (ECG_Notch50HzFilter *)0) {
+        return;
+    }
+
+    /*
+     * Initialize the two states to the steady-state values for a constant
+     * input.  The notch has unity DC gain, so its first output equals input
+     * instead of treating the ADC midpoint as a large step from zero.
+     */
+    filter->state1 = (1.0f - filter->b0) * input;
+    filter->state2 = (filter->b2 - filter->a2) * input;
+    filter->primed = 1U;
+}
+
 float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)
 {
     float output;
@@ -101,16 +117,16 @@ float ECG_Notch50Hz_Process(ECG_Notch50HzFilter *filter, float input)
         return input;
     }
 
-    output = filter->b0 * input
-           + filter->b1 * filter->x1
-           + filter->b2 * filter->x2
-           - filter->a1 * filter->y1
-           - filter->a2 * filter->y2;
+    if (filter->primed == 0U) {
+        ECG_Notch50Hz_Reset(filter, input);
+        return input;
+    }
 
-    filter->x2 = filter->x1;
-    filter->x1 = input;
-    filter->y2 = filter->y1;
-    filter->y1 = output;
+    output = filter->b0 * input + filter->state1;
+    filter->state1 = filter->b1 * input
+                   - filter->a1 * output
+                   + filter->state2;
+    filter->state2 = filter->b2 * input - filter->a2 * output;
 
     return output;
 }

@@ -2,6 +2,7 @@
 #include "Init.h"
 #include "App.h"
 #include "Notch50Hz.h"
+#include "SmoothFilter.h"
 
 #define ECG_ADC_MAX_VALUE (4095.0f)
 
@@ -31,20 +32,25 @@ int main(void)
     uint16_t adc_value;
     uint16_t filtered_adc_value;
     float filtered_value;
+    float smoothed_value;
     ECG_Notch50HzFilter notch_filter;
+    ECG_SmoothFilter smooth_filter;
 
     USART1_Init(115200U);
     ECG_ADC1_Init();
     ECG_TIM3_Init();
     ECG_Notch50Hz_Init(&notch_filter);
+    ECG_SmoothFilter_Init(&smooth_filter);
 
     while (1) {
         if (ECG_GetSample(&adc_value) != 0U) {
             /* One direct-form-I difference-equation step, as in dlsim. */
             filtered_value = ECG_Notch50Hz_Process(&notch_filter,
                                                    (float)adc_value);
+            smoothed_value = ECG_SmoothFilter_Process(&smooth_filter,
+                                                      filtered_value);
 
-            filtered_adc_value = ECG_FilteredValueToAdc(filtered_value);
+            filtered_adc_value = ECG_FilteredValueToAdc(smoothed_value);
 
 #if ECG_SEND_RAW_DATA
             ECG_SendSample(adc_value);

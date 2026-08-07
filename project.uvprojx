@@ -700,12 +700,22 @@
               <FileType>1</FileType>
               <FilePath>.\ECG.Algorithm\Notch50Hz.c</FilePath>
             </File>
-            <File>
-              <FileName>Notch50Hz.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\ECG.Algorithm\Notch50Hz.h</FilePath>
-            </File>
-          </Files>
+              <File>
+                <FileName>Notch50Hz.h</FileName>
+                <FileType>5</FileType>
+                <FilePath>.\ECG.Algorithm\Notch50Hz.h</FilePath>
+              </File>
+              <File>
+                <FileName>SmoothFilter.c</FileName>
+                <FileType>1</FileType>
+                <FilePath>.\ECG.Algorithm\SmoothFilter.c</FilePath>
+              </File>
+              <File>
+                <FileName>SmoothFilter.h</FileName>
+                <FileType>5</FileType>
+                <FilePath>.\ECG.Algorithm\SmoothFilter.h</FilePath>
+              </File>
+            </Files>
         </Group>
       </Groups>
     </Target>

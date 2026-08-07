@@ -1,0 +1,10 @@
+# Keil build output
+Objects/
+Listings/
+*.log
+
+# Keil user-specific GUI state
+*.uvguix.*
+
+# Temporary editor files
+*.bak
